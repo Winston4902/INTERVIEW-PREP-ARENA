@@ -1,0 +1,12 @@
+/* We wiped out the Vite boilerplate that was breaking the layout! */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  background-color: #09090b; /* This locks in the PrepArena dark theme globally */
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
