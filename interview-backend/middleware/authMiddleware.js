@@ -1,18 +1,16 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
 
-const protect = async (req, res, next) => {
+// The "export const" right here is what your server.js is looking for!
+export const protect = async (req, res, next) => {
     let token;
     
-    // Check if the request has an authorization header with a Bearer token
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
         try {
-            token = req.headers.authorization.split(' ')[1]; // Extract the token
+            token = req.headers.authorization.split(' ')[1]; 
             
-            // Verify the token using the secret in your .env
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             
-            // Find the user and attach them to the request (ignoring the password field)
             req.user = await User.findById(decoded.id).select('-password');
             next();
         } catch (error) {
@@ -22,5 +20,3 @@ const protect = async (req, res, next) => {
         res.status(401).json({ error: 'Not authorized, no token provided' });
     }
 };
-
-module.exports = { protect };
