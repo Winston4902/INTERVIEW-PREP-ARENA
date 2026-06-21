@@ -1,10 +1,16 @@
 import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
-import { GoogleGenAI } from '@google/genai'; // <-- NEW: Google AI Brain
+import { GoogleGenAI } from '@google/genai';
 import multer from 'multer';
+import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
 
-// --- API KEY ROULETTE SETUP (GEMINI VERSION) ---
+// Note the .js extensions required for ES Modules
+import User from './models/User.js'; 
+import { protect } from './middleware/authMiddleware.js';
+
+// --- API KEY ROULETTE SETUP ---
 const apiKeys = [
     process.env.GEMINI_API_KEY_1,
     process.env.GEMINI_API_KEY_2,
@@ -16,40 +22,76 @@ if (apiKeys.length === 0) {
     process.exit(1);
 }
 
-// Set up the server
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 
-// Set up Multer to store the uploaded PDF in RAM temporarily
 const upload = multer({ storage: multer.memoryStorage() });
 
-// The "System Prompt" for the Interwiewer
+// --- CONNECT TO MONGODB ---
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('✅ MongoDB Connected Successfully'))
+    .catch(err => console.log('❌ MongoDB Connection Error:', err));
+
+// --- ROUTE: REGISTER NEW USER ---
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const userExists = await User.findOne({ email });
+
+        if (userExists) return res.status(400).json({ error: 'User already exists' });
+
+        const user = await User.create({ name, email, password });
+        
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+        
+        res.status(201).json({ _id: user._id, name: user.name, email: user.email, token });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- ROUTE: LOGIN USER ---
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+
+        if (user && (await user.matchPassword(password))) {
+            const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+            res.json({ _id: user._id, name: user.name, email: user.email, token });
+        } else {
+            res.status(401).json({ error: 'Invalid email or password' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 const systemInstruction = `You are a Senior Software Engineer and Technical Interviewer at a top-tier tech company (e.g., Google, Meta, Amazon). Your objective is to conduct realistic, challenging, and constructive mock interviews for candidates preparing for Software Engineering roles, specifically focusing on Data Structures & Algorithms (DSA) and System Design.
 
 **Your Persona & Tone:**
-*   **Professional yet Encouraging:** You maintain the formal, analytical tone of a real interviewer, but you want the candidate to succeed. 
-*   **Interactive:** You do NOT just hand out questions and answers. You engage in a back-and-forth dialogue.
-*   **Probing:** You actively ask follow-up questions about edge cases, trade-offs, and time/space complexity.
+* **Professional yet Encouraging:** You maintain the formal, analytical tone of a real interviewer, but you want the candidate to succeed. 
+* **Interactive:** You do NOT just hand out questions and answers. You engage in a back-and-forth dialogue.
+* **Probing:** You actively ask follow-up questions about edge cases, trade-offs, and time/space complexity.
 
 **Strict Rules of Conduct:**
-1.  **Never Repeat Questions:** You must keep an internal track of the topics and specific questions you have asked the candidate. Never ask the same question twice, and ensure a diverse rotation of concepts (e.g., if you just asked a Graph problem, move to Dynamic Programming, Trees, or Strings next. If you asked about a read-heavy system design, ask about a write-heavy or distributed storage system next).
+1.  **Never Repeat Questions:** You must keep an internal track of the topics and specific questions you have asked the candidate. Never ask the same question twice, and ensure a diverse rotation of concepts.
 2.  **One Step at a Time:** Never give the candidate a list of questions. Ask ONE question, and wait for their response. 
 3.  **Do Not Spoon-feed:** If the candidate is stuck, do not immediately give them the solution. Provide a subtle hint or ask a guiding question to help them reach the answer themselves.
 4.  **Demand Optimization:** Always ask for the brute-force approach first (if applicable), and then push the candidate to optimize their solution. Always ask for Time and Space Complexity (Big O).
 
 **Interview Flow:**
-1.  **Initialization:** Greet the candidate professionally. Ask them what they would like to focus on today: DSA, System Design, or a mix, and what their target seniority level is (Intern, Junior, Mid-level, Senior).
+1.  **Initialization:** Greet the candidate professionally. Ask them what they would like to focus on today: DSA, System Design, or a mix, and what their target seniority level is.
 2.  **The Question:** Present a clear, unambiguous problem statement. 
-3.  **The Dialogue (DSA):** Expect the candidate to clarify requirements, propose an approach, analyze complexity, and write code. If they write code, review it for bugs and edge cases.
-4.  **The Dialogue (System Design):** Expect the candidate to clarify functional/non-functional requirements, do capacity estimation (if needed), define APIs, design the high-level architecture, and discuss database choices, caching, and scalability bottlenecks. Push back on poor design choices to test their reasoning.
-5.  **Feedback:** Once a problem is fully solved (or the candidate gives up), provide a structured "Interviewer Feedback" summary. Highlight what they did well, where they struggled, and the optimal solution/architecture. 
+3.  **The Dialogue (DSA):** Expect the candidate to clarify requirements, propose an approach, analyze complexity, and write code.
+4.  **The Dialogue (System Design):** Expect the candidate to clarify functional/non-functional requirements, do capacity estimation, define APIs, design the high-level architecture, and discuss bottlenecks.
+5.  **Feedback:** Once a problem is fully solved (or the candidate gives up), provide a structured "Interviewer Feedback" summary. 
 
 Begin the session now by introducing yourself as their interviewer and asking how they would like to structure today's mock interview.`;
 
-// Pronunciation Dictionary for the voice engine
 const cleanTextForSpeech = (rawText) => {
     let text = rawText;
     text = text.replace(/```[\s\S]*?```/g, ' I have provided the code in the chat. ');
@@ -74,21 +116,18 @@ const cleanTextForSpeech = (rawText) => {
 };
 
 // --- ROUTE 1: THE AI INTERVIEWER ---
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', protect, async (req, res) => {
     try {
         const { history } = req.body;
 
-        // Pick a random Gemini key from your pool
         const activeKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
         const ai = new GoogleGenAI({ apiKey: activeKey });
 
-        // Convert your chat history array into the format Gemini expects
         const contents = history.map(msg => ({
             role: msg.role === 'ai' ? 'model' : 'user',
             parts: [{ text: msg.text }]
         }));
 
-        // Get response from Gemini
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: contents,
@@ -96,9 +135,6 @@ app.post('/api/chat', async (req, res) => {
         });
 
         const aiText = response.text;
-
-        // Note: Since Browser window.speechSynthesis will handle voice for free on the frontend now,
-        // we pass the text back immediately without hitting a paid audio API endpoint.
         res.json({ text: aiText, audio: null });
 
     } catch (error) {
@@ -108,7 +144,7 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // --- ROUTE 2: THE PDF RESUME ANALYZER ---
-app.post('/api/analyze-resume', upload.single('resumeFile'), async (req, res) => {
+app.post('/api/analyze-resume', protect, upload.single('resumeFile'), async (req, res) => {
     try {
         const jobDescription = req.body.jobDescription;
         const resumeFile = req.file;
@@ -117,7 +153,6 @@ app.post('/api/analyze-resume', upload.single('resumeFile'), async (req, res) =>
             return res.status(400).json({ error: "Please provide both a PDF resume and a job description." });
         }
 
-        // 1. Dynamically execute pdf2json cleanly
         const PDFParserModule = await import('pdf2json');
         const PDFParser = PDFParserModule.default || PDFParserModule;
         const pdfParser = new PDFParser();
@@ -130,14 +165,11 @@ app.post('/api/analyze-resume', upload.single('resumeFile'), async (req, res) =>
                     for (let texts of page.Texts) {
                         const rawText = texts.R[0].T;
                         try {
-                            // Primary Attempt: Decode cleanly
                             textContent += decodeURIComponent(rawText) + " ";
                         } catch (err) {
-                            // Fallback 1: Unescape malformed characters
                             try {
                                 textContent += unescape(rawText) + " ";
                             } catch (e) {
-                                // Fallback 2: Push raw string to avoid crash
                                 textContent += rawText + " ";
                             }
                         }
@@ -169,12 +201,9 @@ You MUST respond in strict JSON format. Do not include any conversational text, 
   "improvementTips": [<array of strings containing highly actionable, specific advice to improve the resume for this exact role>]
 }"""`;
 
-        // Pick a random Gemini key
         const activeKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
         const ai = new GoogleGenAI({ apiKey: activeKey });
 
-        // Request content generation with a forced JSON output mode
-        // Change the model name here too
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: `JOB DESCRIPTION:\n${jobDescription}\n\nRESUME:\n${resumeText}`,
