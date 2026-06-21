@@ -6,7 +6,6 @@ import multer from 'multer';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 
-// Note the .js extensions required for ES Modules
 import User from './models/User.js'; 
 import { protect } from './middleware/authMiddleware.js';
 
@@ -115,8 +114,8 @@ const cleanTextForSpeech = (rawText) => {
     return text;
 };
 
-// --- ROUTE 1: THE AI INTERVIEWER ---
-app.post('/api/chat', protect, async (req, res) => {
+// --- ROUTE 1: THE AI INTERVIEWER (Security Temporarily Removed) ---
+app.post('/api/chat', async (req, res) => {
     try {
         const { history } = req.body;
 
@@ -143,8 +142,8 @@ app.post('/api/chat', protect, async (req, res) => {
     }
 });
 
-// --- ROUTE 2: THE PDF RESUME ANALYZER ---
-app.post('/api/analyze-resume', protect, upload.single('resumeFile'), async (req, res) => {
+// --- ROUTE 2: THE PDF RESUME ANALYZER (Security Temporarily Removed) ---
+app.post('/api/analyze-resume', upload.single('resumeFile'), async (req, res) => {
     try {
         const jobDescription = req.body.jobDescription;
         const resumeFile = req.file;
